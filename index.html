@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis of Residual and Cluster-Based Retrieval for Multi-Hop RAG</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --secondary: #475569;
+            --bg: #ffffff;
+            --text: #1e293b;
+            --code-bg: #f1f5f9;
+            --border: #e2e8f0;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            line-height: 1.6;
+            color: var(--text);
+            background: #f8fafc;
+            margin: 0;
+            padding: 0;
+        }
+
+        .container {
+            max-width: 850px;
+            margin: 0 auto;
+            padding: 2.5rem;
+            background: var(--bg);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            min-height: 100vh;
+        }
+
+        /* Typography */
+        h1 { font-size: 2.2rem; margin-bottom: 0.5rem; color: #0f172a; line-height: 1.2; }
+        h2 { font-size: 1.75rem; margin-top: 2.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); color: #334155; }
+        h3 { font-size: 1.4rem; margin-top: 2rem; color: #475569; }
+        h4 { font-size: 1.1rem; margin-top: 1.5rem; font-weight: bold; color: #334155; }
+        p { margin-bottom: 1.2rem; text-align: justify; }
+        
+        .metadata { 
+            color: var(--secondary); 
+            margin-bottom: 3rem; 
+            padding-bottom: 1rem;
+            border-bottom: 4px solid var(--primary);
+        }
+        .metadata p { margin: 0; }
+
+        /* Lists */
+        ol, ul { margin-bottom: 1.5rem; padding-left: 1.5rem; }
+        li { margin-bottom: 0.5rem; }
+
+        /* Code Blocks & Algorithms */
+        pre {
+            background: #f3f4f6;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            border: 1px solid var(--border);
+            margin: 1.5rem 0;
+        }
+        code { 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            font-size: 0.9em; 
+            color: #334155;
+        }
+        
+        /* Math Styling */
+        .math-block {
+            background: #ffffff;
+            padding: 1rem;
+            text-align: center;
+            font-family: 'Times New Roman', serif;
+            font-size: 1.1rem;
+            margin: 1.5rem 0;
+        }
+        .math-inline {
+            font-family: 'Times New Roman', serif;
+            font-style: italic;
+        }
+
+        /* Prompts (tcolorbox equivalent) */
+        .prompt-box {
+            background-color: #f9fafb;
+            border: 1px solid #000;
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1.5rem 0;
+        }
+        .prompt-title {
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+            display: block;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 0.25rem;
+        }
+
+        /* Images */
+        .image-container {
+            margin: 2rem 0;
+            text-align: center;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        /* Grid for side-by-side images */
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+
+        .citation-list {
+            list-style: none;
+            padding: 0;
+        }
+        .citation-list li {
+            margin-bottom: 1rem;
+            padding-left: 1.5rem;
+            text-indent: -1.5rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .container { padding: 1.5rem; }
+            h1 { font-size: 1.8rem; }
+            .image-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Analysis of Residual and Cluster-Based Retrieval for Multi-Hop RAG</h1>
+        <div class="metadata">
+            <p><strong>Brian Li</strong> & <strong>Kyle Luo</strong></p>
+            <p>December 9, 2025</p>
+        </div>
+    </header>
+
+    <section>
+        <h2>1. Introduction</h2>
+        <p>The premise of Retrieval-Augmented Generation (RAG) is seductive in its simplicity: encode a user’s query into a vector, perform a Maximum Inner Product Search (MIPS) over a vector database, and concatenate the top results into the LLM's context window (Lewis et al., 2020). For factoid questions like "Who wrote 'The Sun Also Rises'?", this pipeline is remarkably effective. The semantic vector for the query aligns cleanly with the document vector for the answer.</p>
+        
+        <p>However, this simplicity collapses under the weight of multi-hop reasoning. In specialized domains or complex benchmarks like MuSiQue (Trivedi et al., 2022), a single query often requires piecing together evidence from semantically distinct and geographically distant regions of the embedding space. Consider the query: "Who succeeded the first President of Namibia?" This requires two sequential reasoning steps:</p>
+        
+        <ol>
+            <li>Hop 1: Identify the first President of Namibia (e.g., retrieve biographical information on Sam Nujoma).</li>
+            <li>Hop 2: Determine who succeeded him (e.g., retrieve political succession records).</li>
+        </ol>
+
+        <p>Standard dense retrieval struggles here due to a fundamental property of embedding spaces: they are optimized to group semantically similar content, not to disentangle distinct but jointly relevant information. Slight variations of the same fact tend to cluster tightly, and a Top-<span class="math-inline">k</span> search over cosine similarity tends to saturate the context window with redundant paraphrases of the first hop, crowding out evidence required for the second.</p>
+        
+        <p>The result is an echo chamber of relevance. The model receives five confirmations of the first president's identity, but no context about his successor, leading to hallucination or a failed response. Tang and Yang (2024) formalized this failure mode in their MultiHop-RAG benchmark, showing that while RAG excels at retrieving atomic facts, it lacks structural mechanisms to retrieve and maintain diverse, complementary evidence chains.</p>
+        
+        <p>To understand this limitation, we must examine the geometry of transformer-based embedding spaces. Rather than uniformly distributed semantic clouds, these spaces are highly anisotropic (Ethayarajh, 2019), forming narrow cones with dense hubs. A cosine similarity search in such a space:</p>
+        
+        <div class="math-block">
+            score(q, d) = (q &middot; d) / (||q|| ||d||)
+        </div>
+        
+        <p>retrieves vectors with minimal angular distance to the query. When a query aligns with a dense hub, all top results come from that hub, even when essential complementary information lies just outside. Retrieval, in this case, is accurate but incomplete: the system finds relevant text, but misses the rest of the reasoning path.</p>
+
+        <p>This reveals a core paradox: optimizing for similarity alone can undermine utility. Resolving this paradox requires not just better embeddings, but better algorithms for traversing the space.</p>
+
+        <p>Recent work has begun to address this issue. Methods like SAKR (Kang et al., 2024) and Cluster-Based Adaptive Retrieval (Xu et al., 2025) incorporate clustering to better reflect the non-uniform distribution of semantic content in embedding space. Similarly, iterative retrieval strategies like FAIR-RAG aim to progressively refine context in multi-hop settings. Our work draws inspiration from these directions, but introduces a distinct geometric intervention.</p>
+
+        <p>We argue that maximizing recall for multi-hop queries requires more than static re-ranking. It demands explicit modeling of the manifold structure of the embedding space. To that end, we propose two complementary algorithms: (1) an online clustering-based retriever that approximates local density to promote cross-cluster selection, and (2) a residual projection retriever that enforces directional diversity by iteratively subtracting covered components of the query. These methods share a common goal: to span the full semantic basis of the query by uncovering relevant evidence that lies orthogonal to the dominant signal. In doing so, we aim to move beyond retrieval accuracy toward retrieval completeness.</p>
+    </section>
+
+    <section>
+        <h2>2. Methodology: Geometric Interventions</h2>
+        <p>To counter retrieval collapse, we implemented and evaluated three distinct retrieval strategies. We treat the selection of chunks not as a static ranking problem, but as a dynamic selection problem aimed at maximizing the geometric volume of the retrieved context.</p>
+        
+        <h3>2.1 Baseline: Top-K Dense Retrieval</h3>
+        <p>As a control, we utilize standard maximum inner product serach (MIPS). We compute embeddings for the query (<span class="math-inline">q</span>) and all chunks (<span class="math-inline">c<sub>i</sub></span>) using <code>all-MiniLM-L6-v2</code>. We rank strictly by <span class="math-inline">cos(q, c<sub>i</sub>)</span> and select the top <span class="math-inline">k</span> candidates. This represents the industry standard. Note here two factors are very important. The first is that the embedding model creates good feature vectors for the query and chunks that can capture the exact semantic matching that we want. This means we do not want an embedding that is too low dimensional where it doesn't include all important features, but we also don't want one that is too high dimensional with noise. We discuss more about why we chose our embedding model later in Section 3. The second thing to keep in mind is the metric function we are using to compare the "closeness" between two embeddings. Here, we use the cosine function, which is proportional to the angle between the vectors but it's important that the embedding vectors are normalized (which they are). We could have chosen metrics like Euclidean Distance, Manhattan Distance, Jaccard Similarity, etc. but the reason why cosine function is standardized is because it focuses on the direction of vectors rather than their magnitude, which is ideal for comparing semantic meaning, especially in high-dimensional space. Overall, while the traditional top-<span class="math-inline">k</span> retrieval is computationally efficient, it lacks any mechanism to detect or penalize redundancy.</p>
+
+        <h3>2.2 Intervention A: Online Manifold Clustering</h3>
+        <p>Our first intervention addresses the hubness/redundancy problem by explicitly modeling local density with a light-weight, one-pass clustering scheme and then enforcing cluster-aware retrieval. We implement an online/dynamic clustering + adaptive retrieval pipeline.</p>
+
+        <p>The clustering stage is a single-pass (online) sweep over the candidate embeddings. For each embedding <span class="math-inline">x</span> we compute cosine similarity to the current cluster centroids; if the maximum similarity &ge; a threshold ("base_threshold") we assign <span class="math-inline">x</span> to that cluster and update the cluster centroid by an incremental, count-weighted mean followed by renormalization. Otherwise we create a new cluster with <span class="math-inline">x</span> as its initial centroid. This produces:</p>
+        <ul>
+            <li><span class="math-inline">cluster_labels</span> (cluster index per chunk),</li>
+            <li><span class="math-inline">cluster_centroids</span> (normalized),</li>
+            <li><span class="math-inline">cluster_counts</span> (per-cluster sizes).</li>
+        </ul>
+
+        <p>Retrieval then proceeds cluster-aware. We compute cosine similarities between the query embedding and each cluster centroid (cluster–query similarity). Per-cluster thresholds are computed as follows:</p>
+
+<pre><code># Cluster Thresholding Code Snippet
+per_cluster_thresholds = base_threshold + adjustment_scale * cluster_query_sims
+per_cluster_thresholds = np.clip(per_cluster_thresholds, min_threshold, max_threshold)
+</code></pre>
+
+        <p>Note this makes sense, as we should we stricter in clustering chunks that are more similar to the query. For chunks with embeddings that are not relevant to the query, we can group all of the noise in just one representative cluster. So, the base threshold of each cluster should be inversely proportional to how similar the centroid is to the query vector. The total budget <span class="math-inline">k</span> is allocated to clusters primarily in proportion to cluster size (i.e. <span class="math-inline">allocated<sub>i</sub> &approx; &lfloor;k &middot; count<sub>i</sub> / n&rfloor;</span>), with remaining slots given to the most query-relevant clusters if some allocated counts are zero. Within each cluster we take the top candidates by cosine similarity to the query but (1) filter candidates that fall below the per-cluster threshold (and fall back to top items if none pass) and (2) perform a redundancy check that skips any candidate whose cosine to a previously selected item exceeds a `redundancy cutoff`. If, after all clusters are processed, fewer than <span class="math-inline">k</span> items were selected, the algorithm fills the remainder with the global top candidates (excluding already chosen items) and finally returns the <span class="math-inline">k</span> highest-scoring results.</p>
+
+        <p>Notes and clarifications:</p>
+        <ul>
+            <li>The clustering approximates local density via cluster size: dense regions produce large <span class="math-inline">count<sub>i</sub></span>, isolated signals produce small/singleton clusters. Retrieval enforces cross-cluster selection (per-cluster thresholds + redundancy pruning) so we return representatives from multiple clusters instead of many near-duplicates from one cluster.</li>
+            <li>If one prefers explicit inverse-density prioritization (i.e., favor rare clusters), allocate slots by weights inversely proportional to cluster size:
+            <div class="math-block">w<sub>i</sub> &propto; 1 / (count<sub>i</sub> + &epsilon;), &emsp; allocated<sub>i</sub> = &lfloor;k &middot; w<sub>i</sub> / &sum;<sub>j</sub> w<sub>j</sub>&rfloor;</div>
+            where <span class="math-inline">&epsilon; > 0</span> avoids division by zero (choose e.g. <span class="math-inline">&epsilon; = 10<sup>-6</sup></span> or <span class="math-inline">&epsilon; = 1</span> depending on your counts). Any leftover slots (due to flooring or empty clusters) are assigned to the most query-relevant clusters as a simple practical fallback.</li>
+            <li>Centroid updates are an incremental (count-weighted) mean
+            <div class="math-block">c<sub>new</sub> = (c &middot; n + x) / (n + 1)</div>
+            followed by re-normalization to unit length so cosine similarity remains valid.</li>
+        </ul>
+
+        <h3>2.3 Intervention B: Residual Retrieval (Orthogonal Descent)</h3>
+        <p>Our second, more aggressive intervention reframes retrieval as an iterative, residual-driven selection process. Rather than performing expensive all-pairs redundancy checks, we maintain a running residual vector that encodes the portion of the query embedding not yet explained by the chunks we have already picked. At each iteration we (1) select the chunk whose embedding has maximum cosine similarity with the current residual, (2) mark it as used, and (3) update the residual by subtracting that chunk's projection (softly or fully). Repeating this for <span class="math-inline">k</span> steps yields a small set of complementary chunks that jointly explain different directions of the query.</p>
+
+        <h4>2.3.1 The concept</h4>
+        <p>Standard retrieval is static: the query embedding <span class="math-inline">q</span> is fixed and every candidate is scored against <span class="math-inline">q</span>. In Residual Retrieval the search vector evolves. After selecting chunk <span class="math-inline">c<sub>t</sub></span> we treat its information as “explained” and remove the portion of the current residual aligned with <span class="math-inline">c<sub>t</sub></span>. The new residual <span class="math-inline">r<sub>t</sub></span> therefore points toward query components not yet captured.</p>
+
+        <h4>2.3.2 The update rule</h4>
+        <p>Initialize <span class="math-inline">r<sub>0</sub> = q</span>, and at each step <span class="math-inline">t</span> select</p>
+        <div class="math-block">
+            c<sub>t</sub> = arg max<sub>c &isin; C \ U</sub> cos(r<sub>t-1</sub>, c)
+        </div>
+        <p>where <span class="math-inline">U</span> is the set of already-selected indices. Then update the residual by subtracting the (possibly scaled) projection of <span class="math-inline">r<sub>t-1</sub></span> onto <span class="math-inline">c<sub>t</sub></span>:</p>
+        <div class="math-block">
+            r<sub>t</sub> = r<sub>t-1</sub> - &alpha; &middot; proj<sub>c<sub>t</sub></sub>(r<sub>t-1</sub>), &emsp; proj<sub>c</sub>(r) = (r &middot; c / ||c||<sup>2</sup>) c
+        </div>
+        <p>The hyperparameter <span class="math-inline">&alpha; &isin; [0,1]</span> controls the subtraction strength:</p>
+        <ul>
+            <li><span class="math-inline">&alpha; = 1</span> : <em>hard</em> subtraction (enforces orthogonality to <span class="math-inline">c<sub>t</sub></span>);</li>
+            <li><span class="math-inline">0 < &alpha; < 1</span> : <em>soft</em> subtraction (dampens <span class="math-inline">c<sub>t</sub></span>'s direction while preserving some topic signal).</li>
+        </ul>
+        <p>In practice we guard the projection by checking <span class="math-inline">||c<sub>t</sub>||<sup>2</sup> > &epsilon;</span> to avoid division by zero or numerical instability.</p>
+
+        <h4>2.3.3 Practical details and rationale</h4>
+        <ul>
+            <li>Similarity computation<strong>.</strong> Each iteration computes cosine similarities between the current residual and all chunk embeddings, then picks the top index not already used. This amounts to <span class="math-inline">O(kN)</span> work (with <span class="math-inline">N</span> candidates and <span class="math-inline">k</span> selections), which is far cheaper than quadratic all-pairs redundancy checks.</li>
+            <li>Stopping<strong>.</strong> The loop can terminate early if no usable candidate remains (the implementation masks used indices and checks for degenerate maxima).</li>
+            <li>Final scoring<strong>.</strong> For interpretability we report each selected chunk's similarity to the <em>original</em> query <span class="math-inline">q</span>. The residual procedure is used to choose diverse, complementary chunks, but the original-query score is a stable score for downstream ranking or display.</li>
+            <li>Alpha trade-offs<strong>.</strong> <span class="math-inline">&alpha; = 1</span> aggressively removes covered directions and can be powerful for multi-hop queries (the residual is pushed toward less-dominant, secondary directions), but may also drive the residual toward low-magnitude/noise directions. Intermediate <span class="math-inline">&alpha;</span> (e.g. <span class="math-inline">0.3 - 0.7</span>) is a good practical compromise that preserves topicality while reducing redundancy.</li>
+            <li>Numerical guard<strong>.</strong> The implementation skips the projection update when <span class="math-inline">||c<sub>t</sub>||<sup>2</sup></span> is below a small threshold (e.g. <span class="math-inline">10<sup>-12</sup></span>).</li>
+        </ul>
+
+<pre><code># Residual Update Code Snippet
+v = chunk_embs[best_idx]
+v_norm_sq = torch.dot(v, v)
+if v_norm_sq.item() > 1e-12:
+    projection = (torch.dot(residual, v) / v_norm_sq) * v
+    residual = residual - (alpha * projection)
+</code></pre>
+
+        <p>To see why this helps multi-hop queries, note a dominant entity or high-magnitude chunk tends to capture a large component of <span class="math-inline">q</span> and will be selected early. Subtracting that component rotates the residual toward remaining directions (e.g., relations or secondary entities), so subsequent selections naturally focus on what the first retrieval left unanswered—exactly the behavior desired for multi-hop reasoning.</p>
+    </section>
+
+    <section>
+        <h2>3. Experimental Controls and Design</h2>
+        <p>To strictly isolate the impact of our geometric interventions, we implemented a rigorous set of controls. Rather than treating every component as a hyperparameter to tune, we treated several factors as fixed variables.</p>
+        
+        <h3>3.1 Dataset: MuSiQue</h3>
+        <p>We selected the MuSiQue dataset for our evaluation. MuSiQue is specifically curated for multi-hop reasoning where single-step retrieval is known to fail. Unlike simple factoid datasets (like SQuAD), MuSiQue questions cannot be answered by a single document; they require synthesizing information from connected sub-graphs of Wikipedia. This makes it the ideal stress test for our "Retrieval Collapse" hypothesis.</p>
+
+        <h3>3.2 Control Variables</h3>
+        <ul>
+            <li>Granularity (Chunking): We fixed chunk size to 150 words with a 30-token overlap. 150 words (roughly a short paragraph) is small enough to keep each chunk focused on a single factual unit, reducing variance when projecting and subtracting in the residual pipeline, yet large enough to contain coherent context for relation-level signals. In token terms this corresponds to on the order of <span class="math-inline">~100-200</span> tokens depending on tokenizer conventions, so a 30-token overlap corresponds to a practical 10–25% sliding window that prevents sentence/phrase fragmentation. These settings sit in the commonly recommended regime for RAG applications (smaller chunks ~128–256 tokens for fact/QA work, moderate overlap 10–20% as a rule of thumb), balancing retrieval precision, residual stability, and indexing efficiency. (Chroma Research, 2023)</li>
+            <li>Embedding model: We use <code>all-MiniLM-L6-v2</code> (384-dim embeddings). This model is compact (&approx; 6 transformer layers and ~22M parameters), so it loads quickly and is inexpensive to run or fine-tune compared with large, high-capacity encoders. Empirically and in prior SBERT evaluations it offers an attractive speed/quality trade-off (substantially faster than large models while retaining strong semantic performance), which makes it an appropriate practical choice for iterative methods (many similarity computations, residual updates, and cluster passes).</li>
+        </ul>
+
+        <h3>3.3 Refinement Strategy</h3>
+        <p>We also investigated how the retrieval method interacts with the LLM's ingestion strategy. We evaluated two modes:</p>
+        <ol>
+            <li>One-Shot (Concatenation): All <span class="math-inline">k</span> retrieved chunks are provided in the single prompt. In particular, here is the prompt we curated for this approach:
+                <div class="prompt-box">
+                    <span class="prompt-title">LLM Prompt</span>
+                    Query: {query}<br><br>
+                    Article Information:<br>
+                    {combined_chunks_text}<br><br>
+                    Based on the article information, please answer the query. ONLY use what is presented to you in the articles to create your response; do not use knowledge from anywhere else.
+                </div>
+            </li>
+            <li>Iterative Refinement: Chunks are fed to the LLM one by one. The model is asked to "update" its previous answer based on the new chunk.
+                <div class="prompt-box">
+                    <span class="prompt-title">LLM Prompt</span>
+                    Query: {query}<br><br>
+                    New Article Information:<br>
+                    {chunk_text}<br><br>
+                    Old Response:<br>
+                    {prev}<br><br>
+                    Based on this specific piece of context, update the previous response if the new article information provides any additional information relevant to answering the question. Only add details that appear in the article itself; do not use any outside knowledge.
+                </div>
+            </li>
+        </ol>
+    </section>
+
+    <section>
+        <h2>4. Results and Analysis</h2>
+        
+        <h3>4.1 The Ranking Judge: A Discriminative Evaluation Framework</h3>
+        <p>Evaluation in Retrieval-Augmented Generation (RAG) presents a unique challenge: unlike standard classification tasks, there is rarely a single unique ground truth. Standard lexical metrics (e.g., Exact Match, BLEU, ROUGE) fail to capture semantic equivalence or partial correctness in long-form reasoning. Consequently, we considered three automated evaluation paradigms to validate our interventions.</p>
+
+        <h4>4.1.1 Limitations of Traditional Proxies</h4>
+        <p><strong>The Classification Approach (Yes/No/Maybe).</strong> A naive approach is to frame evaluation as a binary verification task: Does the retrieved context contain the answer? (Yes/No). While this offers high interpretability and easy calculation of accuracy, it suffers from a lack of granularity. In multi-hop reasoning, a retrieval set might contain the first hop (partial "Yes") but miss the second, or contain the correct entities with the wrong relationship. A binary classification collapses these distinct failure modes into a single label, obscuring the qualitative differences between "partially useful" and "completely irrelevant" retrieval. One could also simply have every RAG response output Yes or No and deterministically compare whether or not the RAG setups agree with the raw truth. However, we still face issues where, for example, a definitive yes and an on-the-fence yes get grouped together and there's little distinction within each bucket of Yes, No, or Maybe.</p>
+
+        <p><strong>The Absolute Scoring Approach (Likert Scales).</strong> A more nuanced alternative is the "Point-wise Judge," where an LLM assigns a scalar score (e.g., some float between 0-1 where) to a generated answer based on a rubric. However, prior research and our own pilot experiments indicate that LLMs are poorly calibrated for absolute scoring. A score of "0.75" in one session may correspond to a "0.5" in another due to stochasticity, and models often exhibit "positivity bias," clustering scores at the high end of the scale regardless of minor factual errors. This subjectivity makes it difficult to statistically distinguish between two high-performing models.</p>
+
+        <p>The below image, for instance, is one of the results of running a scoring LLM on one of our validation tests. This test specifically targets the online clustering algorithm, and as we can observe from the extracted chunks, the <span class="math-inline">k</span>-means algorithm reduces a lot of the redundancy and gets more unique information from other chunks. However, the judge LLM still scores all three the same.</p>
+
+        <div class="image-container">
+            <img src="Screenshot 2025-12-09 at 7.36.14 PM.png" alt="Scoring LLM Results">
+        </div>
+
+        <h4>4.1.2 Our Approach: Comparative Ranking (Listwise)</h4>
+        <p>To overcome these limitations, we adopted a discriminative ranking strategy. Cognitive science and recent NLP literature suggest that LLMs (much like humans) are significantly more reliable at relative discrimination (comparing A vs. B) than absolute estimation (grading A in isolation).</p>
+
+        <p>We implemented a blinded, listwise ranking protocol:</p>
+        <ol>
+            <li>Input: The evaluator LLM receives the User Query, the Ground Truth Reference, and the anonymized, shuffled outputs from our three systems (Baseline Top-K, Intervention A, and Intervention B).</li>
+            <li>Task: The model is prompted to rank the three outputs from best (1) to worst (3) based on two specific criteria:
+            <ul>
+                <li>Completeness: Does the answer retrieve all necessary logical "hops" required by the query?</li>
+                <li>Accuracy: Is the information factually aligned with the reference without hallucination?</li>
+            </ul>
+            </li>
+            <li>Output: The judge returns a strict ordering (e.g., <span class="math-inline">B > A > Baseline</span>).</li>
+        </ol>
+
+        <p>By forcing the model to choose a winner, we eliminate the calibration noise of scalar metrics. This approach transforms the evaluation from a subjective grading task into a tournament-style preference optimization, providing a high-signal proxy for which method successfully traversed the semantic manifold to retrieve the "hard" second hop. One caveat is that if the best is the traditional RAG, we count it as a win for all three versions. As we observed from our test dataset and from our algorithm logic, any time traditional RAG wins, the responses from online clustering and residual are effectively similar because the information from the chunks in traditional RAG must have existed in the selected chunks for clustering and residual.</p>
+
+        <h3>4.2 Finding 1: Online/Dynamic Clustering is Optimal</h3>
+
+        <div class="image-container">
+            <img src="Screenshot 2025-12-09 at 7.00.10 PM.png" alt="Adjusted One-Shot Performance">
+        </div>
+
+        <p>Quantitatively, the clustering pipeline achieved the highest one-shot utility (19/21 cases). Below we analyze why it outperforms the two alternatives and highlight the practical trade-offs that explain the observed wins. When compared with the traditional top-<span class="math-inline">k</span> baseline, clustering:</p>
+        <ul>
+            <li>Mitigates hubness without losing relevance: Top-<span class="math-inline">k</span> simply returns the nearest neighbors to the query, which often concentrates on a few high-density hubs. Clustering spreads the budget across distinct semantic modes, increasing the probability that at least one retrieved chunk contains the required fact, an effect that directly raises one-shot success rate.</li>
+            <li>Higher effective recall for fact-bearing chunks: By preventing many near-duplicates from occupying the full budget, clustering increases the diversity of covered facts per query while still prioritizing cluster-centroid relevance. This improves the chance that the downstream LLM sees the specific piece of evidence needed for a correct one-shot answer.</li>
+        </ul>
+        <p>When compared with the residual-selection strategy, clustering offers:</p>
+        <ul>
+            <li>Stability and topicality: Residual subtraction can be powerful for discovering orthogonal signal components, but when the residual is aggressively deflated (large <span class="math-inline">&alpha;</span>) it can also drift toward low-magnitude/noise directions. Clustering preserves topical relevance by selecting representative items from distinct semantic regions rather than chasing small-magnitude residuals that may not contain usable facts.</li>
+            <li>Robustness to noisy or overlapping evidence: Multi-paragraph documents often contain partially overlapping paraphrases; residual methods treat overlap by subtracting projections, which can inadvertently remove legitimate supporting context. Clustering, by contrast, treats overlapping paraphrases as a single semantic mode and still allows other modes to be selected, making it more robust when evidence is distributed across similar chunks.</li>
+            <li>Hyperparameter sensitivity: The residual approach depends critically on <span class="math-inline">&alpha;</span> and on the numerical stability of projection updates; small changes can lead to under- or over-subtraction. Clustering’s behavior is primarily governed by an assignment threshold and redundancy cutoff, and in our experiments these produced more consistent results across diverse queries.</li>
+        </ul>
+
+        <p>There also exists computational and deployment trade-offs. Clustering introduces a small, one-pass preprocessing cost to form centroids but is cheap at query time. Each query only compares to the cluster centroids before selecting within a small number of groups. This makes it ideal when many queries reuse the same candidate pool, since clustering amortizes well and yields consistently low latency. In contrast, the residual method requires a full similarity sweep over all candidates for every iteration of its trajectory, making it more expensive per query even though it has no preprocessing. Residual retrieval can still be advantageous in niche multi-hop settings where the query decomposes into clean, orthogonal subcomponents and aggressive subtraction of previously selected directions is beneficial; however, these cases were relatively rare in our dataset, explaining its respectable yet lower win count (16/21).</p>
+
+        <h3>4.3 Finding 2: One-Shot Wins</h3>
+
+        <div class="image-grid">
+            <img src="Screenshot 2025-12-09 at 7.00.23 PM.png" alt="Traditional: One-Shot vs. Iterative">
+            <img src="Screenshot 2025-12-09 at 7.00.32 PM.png" alt="Residual: One-Shot vs. Iterative">
+            <img src="Screenshot 2025-12-09 at 7.00.44 PM.png" alt="K-Means: One-Shot vs. Iterative">
+        </div>
+
+        <p>We compared two prompting strategies while keeping the retrieved chunks fixed. In the one-shot setup, the model receives the query and all retrieved chunks at once and returns a final answer. In the iterative/refinement setup, the model sees one chunk at a time: after each chunk it produces an intermediate answer, and the next step provides the query, the new chunk, and the previous answer for refinement.</p>
+
+        <p>Across all retrieval methods, one-shot prompting was a clear winner. As shown in figures above, one-shot won the majority of cases for Traditional (15/21), Residual (16/21), and K-Means (15/21), with iterative refinement rarely outperforming it. Compared to refinement, there are quite a few advantages that one-shot offers:</p>
+        <ol>
+            <li>Global context and cross-chunk reasoning: Presenting all chunks at once lets the model form associations across chunks (co-reference, relation linking, distributed evidence) that are difficult to reconstruct when information arrives incrementally.</li>
+            <li>Avoiding information loss and anchoring: Iterative refinement conditions each step on the previous answer. Early errors or omissions can become ingrained, and the model may fail to incorporate subsequent chunks fully because it is biased toward modifying the existing answer rather than re-evaluating the whole context.</li>
+            <li>Propagation of hallucination or overconfidence: If an interim answer contains an unsupported inference, later prompts that only include the previous answer (rather than the raw source chunks) make it easier for the model to double-down on the hallucination instead of correcting it from source text.</li>
+            <li>Signal dilution by partial views: Single-chunk prompts provide only a partial view; many factual answers require synthesizing evidence distributed across multiple chunks. One-shot delivery preserves those cross-chunk signals.</li>
+        </ol>
+
+        <p>Iterative refinement still has uses, especially when the context cannot fit in a single prompt or when stepwise oversight is desired, but under the controlled conditions of our experiments, giving the model everything at once consistently produced stronger answers.</p>
+    </section>
+
+    <section>
+        <h2>5. Future Work and Limitations</h2>
+        <p>Our results suggest that the future of Retrieval-Augmented Generation (RAG) lies not only in larger context windows or stronger base models, but also in algorithms that are explicitly aware of the geometry of the embedding space. Treating retrieval as a static, one-shot similarity search is mathematically insufficient for multi-hop reasoning. However, our current geometric interventions operate under specific constraints that future work must address.</p>
+
+        <h3>5.1 Dynamic Residual Schedules</h3>
+        <p>A primary limitation of our Residual Retrieval intervention is the reliance on a fixed scalar hyperparameter <span class="math-inline">&alpha; &isin; [0, 1]</span>. In our experiments, we observed a trade-off: a high <span class="math-inline">&alpha;</span> (aggressive subtraction) effectively removed redundant information but occasionally forced the retriever into "semantic drift," selecting chunks that were mathematically orthogonal but topically irrelevant (noise).</p>
+        
+        <p>Future work should explore Dynamic Residual Schedules. Similar to learning rate annealing in gradient descent, <span class="math-inline">&alpha;</span> could decay as the retrieval depth increases (<span class="math-inline">k &rarr; K</span>). Early iterations would use high <span class="math-inline">&alpha;</span> to clear dominant semantic clusters, while later iterations would use lower <span class="math-inline">&alpha;</span> to fine-tune context without drifting into noise. Furthermore, a lightweight "controller" network could be trained to predict the optimal <span class="math-inline">&alpha;</span> dynamically based on the norm of the current residual vector.</p>
+
+        <h3>5.2 Scalability and Approximate Geometry</h3>
+        <p>Both interventions introduced in this paper rely on linear scans of the candidate vectors. The Online Clustering algorithm processes the corpus in <span class="math-inline">O(N)</span>, and the Residual Retrieval algorithm requires re-scoring the corpus at each step, scaling with <span class="math-inline">O(kN)</span>. While efficient for the MuSiQue validation set (~400 chunks), these methods do not scale to production RAG systems containing millions of vectors.</p>
+
+        <p>To bridge this gap, future research must integrate geometric constraints directly into Approximate Nearest Neighbor (ANN) indices. For instance, the clustering logic could be mapped to Inverted File Systems (IVF), which pre-sort the embedding space into distinct geometric partitions (often called Voronoi cells). Rather than performing a slow, brute-force scan of every document, the retriever could enforce diversity by explicitly sampling candidates from multiple, spatially distinct partitions within the index.</p>
+
+        <h3>5.3 Richer Geometric Representations</h3>
+        <p>Our current residual approach subtracts the projection of the single most recently retrieved chunk. This greedy subtraction does not guarantee orthogonality to the entire retrieved set. A more robust mathematical framework would involve maintaining an orthonormal basis for the subspace spanned by all previously selected chunks. At each step, the query would be projected onto the orthogonal complement of this entire subspace. This would ensure that each new retrieved chunk provides information strictly novel to the collective context, rather than just the immediate predecessor.</p>
+
+        <h3>5.4 Generalization Across Encoders</h3>
+        <p>Finally, our experiments utilized a compact embedding model (all-MiniLM-L6-v2) to prioritize experimental throughput. It remains an open question whether the redundancy issues we observed are equally prevalent in massive, state-of-the-art embedding models. Future work should evaluate whether our geometric interventions provide similar marginal gains on these higher-dimensional manifolds or if they are primarily remedial for smaller semantic spaces.</p>
+
+        <p>Overall, we view this project as an initial step toward retrieval systems that are structurally aware of the shape of the latent space. By moving from static ranking to dynamic geometric traversal, we can build RAG systems that reason not just about what is similar, but about what is missing.</p>
+    </section>
+
+    <section style="margin-top: 4rem; padding-top: 2rem; border-top: 1px solid #e2e8f0;">
+        <ul class="citation-list">
+            <li>[1] Lewis, P., et al. (2020). Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks. <em>Advances in Neural Information Processing Systems (NeurIPS)</em>.</li>
+            <li>[2] Reimers, N., & Gurevych, I. (2019). Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks. <em>Proceedings of EMNLP</em>.</li>
+            <li>[3] Trivedi, H., et al. (2022). MuSiQue: Multihop Questions for Single-hop Query Estimation. <em>Transactions of the Association for Computational Linguistics</em>.</li>
+            <li>[4] Tang, Y., & Yang, M. (2024). MultiHop-RAG: Benchmarking Retrieval-Augmented Generation for Multi-Hop Queries. <em>arXiv preprint arXiv:2401.15391</em>.</li>
+            <li>[5] Kang, M., et al. (2024). SAKR: System for Automated Knowledge Retrieval. <em>Proceedings of ACL</em>.</li>
+            <li>[6] Xu, P., et al. (2025). Cluster-Based Adaptive Retrieval for RAG. <em>IEEE Transactions on Knowledge and Data Engineering</em>.</li>
+            <li>[7] Ethayarajh, K. (2019). How Contextual are Contextualized Word Representations? <em>Proceedings of EMNLP</em>.</li>
+            <li>[8] Chroma Research. (2023). The Impact of Chunk Size on RAG. Available at: research.trychroma.com.</li>
+        </ul>
+    </section>
+</div>
+
+</body>
+</html>
